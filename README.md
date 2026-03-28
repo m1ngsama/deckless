@@ -136,6 +136,9 @@ Other X11 desktop environments may still benefit from the proxy split and Big Pi
 
 - [Architecture notes](docs/architecture.md)
 - [i3 integration](docs/i3.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Contributing](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
 
 ## License
 
