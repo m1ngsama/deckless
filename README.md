@@ -14,12 +14,25 @@ It started from a real Arch Linux desktop that needed direct game traffic, proxi
 
 - Keeps `/usr/bin/steam` as the official upstream client.
 - Proxies only `steamwebhelper` traffic, so store, community pages, avatars, and embedded web content can use a proxy while games and downloads stay direct.
-- Restores the original `steamwebhelper_sniper_wrap.sh` when Steam exits.
+- Restores the original `steamwebhelper_sniper_wrap.sh` shortly after Steam exits through a detached cleanup helper.
 - Removes Steam's `--disable-gpu` and `--disable-gpu-compositing` flags for Big Picture webhelper sessions.
 - Exports sane `GBM`, `EGL`, and PulseAudio defaults to help Steam stay on hardware acceleration instead of dropping to software rendering.
 - Launches Big Picture through `gamescope` and `gamemode` when they are available.
 - Ships an optional i3 bridge that lets a newly launched game take fullscreen from Big Picture and hands fullscreen back when the game exits.
 - Installs cleanly into XDG paths and can be rolled back with `./uninstall.sh`.
+
+## Real-machine verification
+
+Validated on March 28, 2026 on an Arch Linux desktop with X11, i3, NVIDIA 595.58.3, and a 240 Hz monitor.
+
+![Deckless Big Picture running fullscreen on Arch Linux with i3](assets/screenshots/big-picture-arch-i3.png)
+
+The live validation for this repository confirmed:
+
+- Steam updater verification completed without a wrapper size mismatch loop.
+- The top-level `steamwebhelper` launched with `--proxy-server=...` and without Steam's forced `--disable-gpu*` flags.
+- `webhelper_gpu.txt` reported `gpu_compositing: enabled`, `opengl: enabled_on`, and `video_decode: enabled`.
+- Big Picture opened as a focused fullscreen `steamwebhelper` window under i3.
 
 ## Design goals
 
@@ -66,11 +79,30 @@ For a controller-first session, launch:
 steam-bigpicture
 ```
 
+## Arch packaging
+
+This repository also ships a `PKGBUILD` for a rolling `deckless-git` package.
+
+From a local clone:
+
+```bash
+makepkg -si
+deckless-install
+```
+
+That installs Deckless under `/usr/share/deckless` and exposes:
+
+- `deckless-install`
+- `deckless-uninstall`
+
 ## What gets installed
 
 - `~/.local/share/deckless/bin/deckless-steam`
 - `~/.local/share/deckless/bin/deckless-bigpicture`
 - `~/.local/share/deckless/bin/deckless-i3-bigpicture-bridge`
+- `~/.local/share/deckless/bin/deckless-sync-webhelper-wrapper`
+- `~/.local/share/deckless/bin/deckless-webhelper-heal`
+- `~/.local/share/deckless/bin/deckless-webhelper-cleanup`
 - `~/.local/bin/steam`
 - `~/.local/bin/steam-bigpicture`
 - `~/.local/share/applications/steam.desktop`
@@ -119,6 +151,8 @@ See [docs/i3.md](docs/i3.md) for the handoff behavior.
 - official `steam` package
 - X11
 - i3
+- NVIDIA proprietary driver 595.58.3
+- 240 Hz display
 - `gamescope`
 - `gamemode`
 - `jq`
@@ -129,7 +163,7 @@ Other X11 desktop environments may still benefit from the proxy split and Big Pi
 
 - Deckless never replaces `/usr/bin/steam`.
 - The Steam runtime wrapper is only rewritten while Steam is active.
-- The original wrapper is restored after Steam exits.
+- The original wrapper is restored shortly after Steam exits, once Steam activity is gone.
 - `./uninstall.sh` restores the local launchers and desktop entries that existed before the first install.
 
 ## Documentation

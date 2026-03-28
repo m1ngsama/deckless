@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+steam_root="$(readlink -e "$HOME/.steam/steam" || true)"
+if [[ -z "$steam_root" ]]; then
+  steam_root="${XDG_DATA_HOME:-$HOME/.local/share}/Steam"
+fi
+
+wrapper_target="${steam_root}/ubuntu12_64/steamwebhelper_sniper_wrap.sh"
+webhelper_binary="${steam_root}/ubuntu12_64/steamwebhelper"
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/deckless/steam"
+session_state="${state_dir}/session.env"
+original_wrapper="${state_dir}/steamwebhelper_sniper_wrap.sh.original"
+
+[[ -f "$session_state" ]] || exit 0
+
+steam_activity_running() {
+  local args
+
+  while IFS= read -r args; do
+    if [[ "$args" == *"${steam_root}/ubuntu12_32/steam"* ]] || \
+       [[ "$args" == *"${webhelper_binary}"* ]] || \
+       [[ "$args" == *"${wrapper_target}"* ]] || \
+       [[ "$args" == *'/usr/bin/steam'* ]]; then
+      return 0
+    fi
+  done < <(ps -ww -eo args=)
+
+  return 1
+}
+
+restore_wrapper() {
+  if grep -Fq 'deckless-managed steam webhelper wrapper' "$wrapper_target" 2>/dev/null && [[ -f "$original_wrapper" ]]; then
+    cp -a "$original_wrapper" "$wrapper_target"
+  fi
+
+  rm -f "$session_state" "$original_wrapper"
+}
+
+seen_steam=0
+idle_checks=0
+startup_checks=0
+
+while (( idle_checks < 30 )); do
+  if steam_activity_running; then
+    seen_steam=1
+    idle_checks=0
+    startup_checks=0
+  else
+    if (( seen_steam == 1 )); then
+      (( idle_checks += 1 ))
+    else
+      (( startup_checks += 1 ))
+      if (( startup_checks >= 30 )); then
+        break
+      fi
+    fi
+  fi
+
+  sleep 2
+done
+
+restore_wrapper

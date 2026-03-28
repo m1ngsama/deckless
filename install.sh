@@ -124,6 +124,9 @@ backup_once "${autostart_dir}/deckless-i3-bigpicture-bridge.desktop" "autostart/
 install -Dm755 "${repo_root}/bin/deckless-steam" "${install_root}/bin/deckless-steam"
 install -Dm755 "${repo_root}/bin/deckless-bigpicture" "${install_root}/bin/deckless-bigpicture"
 install -Dm755 "${repo_root}/bin/deckless-i3-bigpicture-bridge" "${install_root}/bin/deckless-i3-bigpicture-bridge"
+install -Dm755 "${repo_root}/bin/deckless-sync-webhelper-wrapper" "${install_root}/bin/deckless-sync-webhelper-wrapper"
+install -Dm755 "${repo_root}/bin/deckless-webhelper-heal" "${install_root}/bin/deckless-webhelper-heal"
+install -Dm755 "${repo_root}/bin/deckless-webhelper-cleanup" "${install_root}/bin/deckless-webhelper-cleanup"
 install -Dm644 "${repo_root}/config/proxy-env.example.sh" "${config_dir}/proxy-env.example.sh"
 install -Dm644 "${repo_root}/config/deckless.env.example" "${config_dir}/deckless.env.example"
 

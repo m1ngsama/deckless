@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is inspired by Keep a Changelog, and the project follows semantic versioning once tagged releases begin.
 
+## [Unreleased]
+
+### Added
+
+- A `deckless-git` `PKGBUILD` and `.SRCINFO` entry point for Arch users who want to package Deckless from a local clone.
+- A real-machine Big Picture screenshot and validation notes in the README.
+
+### Fixed
+
+- Wrapper timing around Steam's updater verification so Deckless no longer needs to present a modified wrapper during the verification phase to recover the proxied, GPU-enabled webhelper path.
+- Wrapper cleanup now survives Steam's shutdown path by detaching the cleanup helper from the launcher session before Steam exits.
+
 ## [0.1.0] - 2026-03-28
 
 ### Added

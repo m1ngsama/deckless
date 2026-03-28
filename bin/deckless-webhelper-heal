@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+steam_root="$(readlink -e "$HOME/.steam/steam" || true)"
+if [[ -z "$steam_root" ]]; then
+  steam_root="${XDG_DATA_HOME:-$HOME/.local/share}/Steam"
+fi
+
+wrapper_target="${steam_root}/ubuntu12_64/steamwebhelper_sniper_wrap.sh"
+webhelper_binary="${steam_root}/ubuntu12_64/steamwebhelper"
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/deckless/steam"
+session_state="${state_dir}/session.env"
+sync_helper="${script_dir}/deckless-sync-webhelper-wrapper"
+
+[[ -f "$session_state" ]] || exit 0
+[[ -x "$sync_helper" ]] || exit 0
+
+proxy_server=''
+if [[ -r "$session_state" ]]; then
+  # shellcheck disable=SC1090
+  . "$session_state"
+  proxy_server="${DECKLESS_WEBHELPER_PROXY_SERVER:-}"
+fi
+
+webhelper_args_healthy() {
+  local args="$1"
+
+  if [[ -n "$proxy_server" && "$args" != *'--proxy-server='* ]]; then
+    return 1
+  fi
+
+  if [[ "$args" == *'--disable-gpu '* || "$args" == *'--disable-gpu-compositing'* ]]; then
+    return 1
+  fi
+
+  return 0
+}
+
+attempt=0
+while (( attempt < 180 )); do
+  top_level_pids=()
+  wrap_pids=()
+  healthy=0
+
+  while read -r pid args; do
+    if [[ "$args" == *"${wrapper_target}"* ]]; then
+      wrap_pids+=("$pid")
+    fi
+
+    if [[ "$args" == *'steamwebhelper -nocrashdialog'* ]]; then
+      if webhelper_args_healthy "$args"; then
+        healthy=1
+        break
+      fi
+      top_level_pids+=("$pid")
+    elif [[ "$args" == *"${webhelper_binary}"* && "$args" != *'--type='* ]]; then
+      if webhelper_args_healthy "$args"; then
+        healthy=1
+        break
+      fi
+      top_level_pids+=("$pid")
+    fi
+  done < <(ps -ww -eo pid=,args=)
+
+  (( healthy == 1 )) && exit 0
+
+  if (( ${#wrap_pids[@]} > 0 || ${#top_level_pids[@]} > 0 )); then
+    "$sync_helper" || exit 0
+
+    if (( ${#wrap_pids[@]} > 0 )); then
+      kill -TERM "${wrap_pids[@]}" 2>/dev/null || true
+    fi
+
+    if (( ${#top_level_pids[@]} > 0 )); then
+      kill -TERM "${top_level_pids[@]}" 2>/dev/null || true
+    fi
+
+    exit 0
+  fi
+
+  sleep 1
+  (( attempt += 1 ))
+done
