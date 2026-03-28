@@ -1,0 +1,41 @@
+name: ShellCheck
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Run bash syntax checks
+        run: |
+          bash -n install.sh
+          bash -n uninstall.sh
+          bash -n bin/deckless-steam
+          bash -n bin/deckless-bigpicture
+          bash -n bin/deckless-i3-bigpicture-bridge
+
+      - name: Run ShellCheck
+        run: |
+          shellcheck \
+            install.sh \
+            uninstall.sh \
+            bin/deckless-steam \
+            bin/deckless-bigpicture \
+            bin/deckless-i3-bigpicture-bridge
