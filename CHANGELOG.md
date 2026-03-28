@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is inspired by Keep a Changelog, and the project follows semantic versioning once tagged releases begin.
 
-## [Unreleased]
+## [0.2.0] - 2026-03-28
 
 ### Added
 
@@ -30,3 +30,5 @@ The format is inspired by Keep a Changelog, and the project follows semantic ver
 - GitHub Actions validation for shell syntax and ShellCheck.
 
 [0.1.0]: https://github.com/m1ngsama/deckless/releases/tag/v0.1.0
+[0.2.0]: https://github.com/m1ngsama/deckless/compare/v0.1.0...v0.2.0
+[Unreleased]: https://github.com/m1ngsama/deckless/compare/v0.2.0...HEAD
