@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+steam_root="$(readlink -e "$HOME/.steam/steam" || true)"
+if [[ -z "$steam_root" ]]; then
+  steam_root="${XDG_DATA_HOME:-$HOME/.local/share}/Steam"
+fi
+
+target="${steam_root}/ubuntu12_64/steamwebhelper_sniper_wrap.sh"
+target_dir="${target%/*}"
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/deckless/steam"
+session_state="${state_dir}/session.env"
+original_wrapper="${state_dir}/steamwebhelper_sniper_wrap.sh.original"
+
+[[ -d "$target_dir" ]] || exit 0
+[[ -f "$target" ]] || exit 0
+[[ -f "$session_state" ]] || exit 0
+
+mkdir -p "$state_dir"
+
+if ! grep -Fq 'deckless-managed steam webhelper wrapper' "$target" 2>/dev/null && [[ ! -f "$original_wrapper" ]]; then
+  cp -a "$target" "$original_wrapper"
+fi
+
+tmp_wrapper="$(mktemp "${target_dir}/.steamwebhelper_sniper_wrap.sh.XXXXXX")"
+trap 'rm -f "$tmp_wrapper"' EXIT
+
+printf -v session_state_q '%q' "$session_state"
+
+cat >"$tmp_wrapper" <<EOF
+#!/bin/bash
+
+# deckless-managed steam webhelper wrapper
+
+session_state=${session_state_q}
+
+export LD_LIBRARY_PATH=.\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}
+
+if [[ -z "\${XDG_RUNTIME_DIR:-}" ]]; then
+  export XDG_RUNTIME_DIR="/run/user/\$(id -u)"
+fi
+
+if [[ -z "\${PULSE_SERVER:-}" && -S "\${XDG_RUNTIME_DIR}/pulse/native" ]]; then
+  export PULSE_SERVER="unix:\${XDG_RUNTIME_DIR}/pulse/native"
+fi
+
+if [[ -z "\${GBM_BACKENDS_PATH:-}" ]]; then
+  if [[ -r /run/host/usr/lib/gbm/dri_gbm.so ]]; then
+    export GBM_BACKENDS_PATH='/run/host/usr/lib/gbm'
+  elif [[ -r /usr/lib/gbm/dri_gbm.so ]]; then
+    export GBM_BACKENDS_PATH='/usr/lib/gbm'
+  fi
+fi
+
+if [[ -z "\${__EGL_VENDOR_LIBRARY_DIRS:-}" ]]; then
+  if [[ -d /run/host/usr/share/glvnd/egl_vendor.d ]]; then
+    export __EGL_VENDOR_LIBRARY_DIRS='/run/host/usr/share/glvnd/egl_vendor.d'
+  elif [[ -d /usr/share/glvnd/egl_vendor.d ]]; then
+    export __EGL_VENDOR_LIBRARY_DIRS='/usr/share/glvnd/egl_vendor.d'
+  fi
+fi
+
+proxy_server="\${DECKLESS_WEBHELPER_PROXY_SERVER:-}"
+proxy_bypass="\${DECKLESS_WEBHELPER_PROXY_BYPASS_LIST:-}"
+if [[ -z "\$proxy_server" && -r "\$session_state" ]]; then
+  # shellcheck disable=SC1090
+  . "\$session_state"
+  proxy_server="\${DECKLESS_WEBHELPER_PROXY_SERVER:-}"
+  proxy_bypass="\${DECKLESS_WEBHELPER_PROXY_BYPASS_LIST:-}"
+fi
+
+extra_args=()
+forwarded_args=()
+
+for arg in "\$@"; do
+  case "\$arg" in
+    --disable-gpu|--disable-gpu-compositing)
+      continue
+      ;;
+    *)
+      forwarded_args+=( "\$arg" )
+      ;;
+  esac
+done
+
+if [[ -n "\$proxy_server" ]]; then
+  extra_args+=( "--proxy-server=\${proxy_server}" )
+fi
+
+if [[ -n "\$proxy_bypass" ]]; then
+  extra_args+=( "--proxy-bypass-list=\${proxy_bypass}" )
+fi
+
+extra_args+=( "--ignore-gpu-blocklist" "--enable-gpu-rasterization" )
+
+echo "<6>exec ./steamwebhelper \${extra_args[*]} \${forwarded_args[*]}"
+echo "<remaining-lines-assume-level=7>"
+exec ./steamwebhelper "\${extra_args[@]}" "\${forwarded_args[@]}"
+EOF
+
+if [[ ! -f "$target" ]] || ! cmp -s "$tmp_wrapper" "$target"; then
+  chmod 0755 "$tmp_wrapper"
+  mv -f "$tmp_wrapper" "$target"
+fi

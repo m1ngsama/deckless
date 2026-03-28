@@ -15,9 +15,22 @@ This is the main launcher.
 - resolves the active Steam runtime path
 - sources optional Deckless config
 - loads proxy settings
-- writes a session-only replacement for `steamwebhelper_sniper_wrap.sh`
+- writes session state for helper processes
+- starts a healer that waits for the first Steam webhelper hop and then patches `steamwebhelper_sniper_wrap.sh`
 - clears proxy environment variables before starting the official Steam client
-- restores the original wrapper after Steam exits
+- starts a detached cleanup worker that restores the original wrapper after Steam exits
+
+### `deckless-sync-webhelper-wrapper`
+
+This helper writes the managed `steamwebhelper_sniper_wrap.sh` replacement for the current session and captures the official upstream wrapper before replacing it.
+
+### `deckless-webhelper-heal`
+
+This helper waits for the first top-level `steamwebhelper` launch, checks whether proxy and GPU policy landed, and re-launches it once through the managed wrapper when needed.
+
+### `deckless-webhelper-cleanup`
+
+This helper runs detached from the launcher session, waits until Steam activity is gone, restores the official wrapper, and removes the session backup.
 
 ### `deckless-bigpicture`
 
@@ -29,7 +42,7 @@ This bridge listens to i3 window events and hands fullscreen from Big Picture to
 
 ## Why patch the Steam webhelper wrapper at runtime
 
-Steam itself already uses `steamwebhelper_sniper_wrap.sh` as the last hop before `steamwebhelper`. Replacing that wrapper only while Steam is running gives Deckless a narrow control point for:
+Steam itself already uses `steamwebhelper_sniper_wrap.sh` as the last hop before `steamwebhelper`. Replacing that wrapper only after Steam reaches the webhelper launch phase gives Deckless a narrow control point for:
 
 - webhelper-only proxy flags
 - removing forced `--disable-gpu` arguments

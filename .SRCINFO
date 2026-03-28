@@ -1,0 +1,20 @@
+pkgbase = deckless-git
+	pkgdesc = Keep official Steam intact while fixing proxy split, Big Picture rendering, and i3 couch-mode handoff on Linux
+	pkgver = 0.1.0.r0.g089aa68
+	pkgrel = 1
+	url = https://github.com/m1ngsama/deckless
+	arch = any
+	license = GPL-3.0-or-later
+	makedepends = git
+	depends = bash
+	depends = jq
+	depends = steam
+	optdepends = gamescope: run Big Picture inside gamescope
+	optdepends = gamemode: enable gamemode for Big Picture sessions
+	optdepends = i3-wm: enable fullscreen handoff between Big Picture and launched games
+	provides = deckless
+	conflicts = deckless
+	source = git+https://github.com/m1ngsama/deckless.git
+	sha256sums = SKIP
+
+pkgname = deckless-git

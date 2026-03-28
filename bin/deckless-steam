@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-script_path="$(readlink -f "${BASH_SOURCE[0]}")"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/deckless"
 settings_env="${DECKLESS_SETTINGS_ENV:-${config_dir}/deckless.env}"
 legacy_proxy_env="${HOME}/.config/network/proxy-env.sh"
+proxy_env="${DECKLESS_PROXY_ENV:-${config_dir}/proxy-env.sh}"
 steam_bin="${DECKLESS_STEAM_BIN:-/usr/bin/steam}"
 
 if [[ -r "$settings_env" ]]; then
@@ -22,7 +23,11 @@ target_dir="${target%/*}"
 state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/deckless/steam"
 session_state="${state_dir}/session.env"
 original_wrapper="${state_dir}/steamwebhelper_sniper_wrap.sh.original"
-proxy_env="${DECKLESS_PROXY_ENV:-${config_dir}/proxy-env.sh}"
+
+sync_helper="${script_dir}/deckless-sync-webhelper-wrapper"
+heal_helper="${script_dir}/deckless-webhelper-heal"
+cleanup_helper="${script_dir}/deckless-webhelper-cleanup"
+cleanup_done=0
 
 if [[ ! -d "$target_dir" ]]; then
   printf 'Steam runtime directory not found: %s\n' "$target_dir" >&2
@@ -34,28 +39,81 @@ if [[ ! -x "$steam_bin" ]]; then
   exit 1
 fi
 
+for helper in "$sync_helper" "$heal_helper" "$cleanup_helper"; do
+  if [[ ! -x "$helper" ]]; then
+    printf 'Deckless helper not found: %s\n' "$helper" >&2
+    exit 1
+  fi
+done
+
 mkdir -p "$state_dir"
 
-terminate_stale_monitors() {
+steam_activity_running() {
+  local args
+
+  while IFS= read -r args; do
+    if [[ "$args" == *"${steam_root}/ubuntu12_32/steam"* ]] || \
+       [[ "$args" == *"${steam_root}/ubuntu12_64/steamwebhelper"* ]] || \
+       [[ "$args" == *"${target}"* ]] || \
+       [[ "$args" == *"${steam_bin}"* ]]; then
+      return 0
+    fi
+  done < <(ps -ww -eo args=)
+
+  return 1
+}
+
+terminate_stale_helpers() {
   local pid
   local args
 
-  while IFS= read -r line; do
-    pid="${line%% *}"
-    args="${line#* }"
-    [[ "$pid" == "$$" ]] && continue
-
+  while read -r pid args; do
     case "$args" in
-      "$script_path"|\
-      "$script_path "*|\
-      "bash $script_path"|\
-      "bash $script_path "*|\
-      "/usr/bin/bash $script_path"|\
-      "/usr/bin/bash $script_path "*)
+      "$sync_helper"|\
+      "$sync_helper "*|\
+      "$heal_helper"|\
+      "$heal_helper "*|\
+      "$cleanup_helper"|\
+      "$cleanup_helper "*|\
+      "bash $sync_helper"|\
+      "bash $sync_helper "*|\
+      "bash $heal_helper"|\
+      "bash $heal_helper "*|\
+      "bash $cleanup_helper"|\
+      "bash $cleanup_helper "*|\
+      "/usr/bin/bash $sync_helper"|\
+      "/usr/bin/bash $sync_helper "*|\
+      "/usr/bin/bash $heal_helper"|\
+      "/usr/bin/bash $heal_helper "*|\
+      "/usr/bin/bash $cleanup_helper"|\
+      "/usr/bin/bash $cleanup_helper "*)
         kill -TERM "$pid" 2>/dev/null || true
         ;;
     esac
   done < <(ps -ww -eo pid=,args=)
+}
+
+start_detached_helper() {
+  local helper="$1"
+
+  if command -v setsid >/dev/null 2>&1; then
+    setsid -f "$helper" >/dev/null 2>&1 </dev/null || true
+  else
+    nohup "$helper" >/dev/null 2>&1 </dev/null &
+  fi
+}
+
+restore_official_wrapper() {
+  if (( cleanup_done == 1 )); then
+    return 0
+  fi
+
+  if grep -Fq 'deckless-managed steam webhelper wrapper' "$target" 2>/dev/null && [[ -f "$original_wrapper" ]]; then
+    cp -a "$original_wrapper" "$target"
+  fi
+
+  rm -f "$session_state" "$original_wrapper"
+  cleanup_done=1
 }
 
 apply_optional_locale() {
@@ -127,206 +185,11 @@ build_chromium_bypass_list() {
   printf '%s\n' "${entries[*]}"
 }
 
-restore_tracked_wrapper() {
-  if [[ -f "$original_wrapper" ]]; then
-    cp -a "$original_wrapper" "$target"
-  fi
-}
-
-restore_official_wrapper() {
-  restore_tracked_wrapper
-  rm -f "$session_state" "$original_wrapper"
-}
-
-write_managed_wrapper() {
-  local tmp_wrapper
-  local session_state_q
-
-  tmp_wrapper="$(mktemp "${target_dir}/.steamwebhelper_sniper_wrap.sh.XXXXXX")"
-  printf -v session_state_q '%q' "$session_state"
-
-  cat >"$tmp_wrapper" <<EOF
-#!/bin/bash
-
-# deckless-managed steam webhelper wrapper
-
-session_state=${session_state_q}
-
-export LD_LIBRARY_PATH=.\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}
-
-if [[ -z "\${XDG_RUNTIME_DIR:-}" ]]; then
-  export XDG_RUNTIME_DIR="/run/user/\$(id -u)"
+if ! steam_activity_running; then
+  terminate_stale_helpers
+  restore_official_wrapper
 fi
 
-if [[ -z "\${PULSE_SERVER:-}" && -S "\${XDG_RUNTIME_DIR}/pulse/native" ]]; then
-  export PULSE_SERVER="unix:\${XDG_RUNTIME_DIR}/pulse/native"
-fi
-
-if [[ -z "\${GBM_BACKENDS_PATH:-}" ]]; then
-  if [[ -r /run/host/usr/lib/gbm/dri_gbm.so ]]; then
-    export GBM_BACKENDS_PATH='/run/host/usr/lib/gbm'
-  elif [[ -r /usr/lib/gbm/dri_gbm.so ]]; then
-    export GBM_BACKENDS_PATH='/usr/lib/gbm'
-  fi
-fi
-
-if [[ -z "\${__EGL_VENDOR_LIBRARY_DIRS:-}" ]]; then
-  if [[ -d /run/host/usr/share/glvnd/egl_vendor.d ]]; then
-    export __EGL_VENDOR_LIBRARY_DIRS='/run/host/usr/share/glvnd/egl_vendor.d'
-  elif [[ -d /usr/share/glvnd/egl_vendor.d ]]; then
-    export __EGL_VENDOR_LIBRARY_DIRS='/usr/share/glvnd/egl_vendor.d'
-  fi
-fi
-
-proxy_server="\${DECKLESS_WEBHELPER_PROXY_SERVER:-}"
-proxy_bypass="\${DECKLESS_WEBHELPER_PROXY_BYPASS_LIST:-}"
-if [[ -z "\$proxy_server" && -r "\$session_state" ]]; then
-  # shellcheck disable=SC1090
-  . "\$session_state"
-  proxy_server="\${DECKLESS_WEBHELPER_PROXY_SERVER:-}"
-  proxy_bypass="\${DECKLESS_WEBHELPER_PROXY_BYPASS_LIST:-}"
-fi
-
-extra_args=()
-forwarded_args=()
-
-for arg in "\$@"; do
-  case "\$arg" in
-    --disable-gpu|--disable-gpu-compositing)
-      continue
-      ;;
-    *)
-      forwarded_args+=( "\$arg" )
-      ;;
-  esac
-done
-
-if [[ -n "\$proxy_server" ]]; then
-  extra_args+=( "--proxy-server=\${proxy_server}" )
-fi
-
-if [[ -n "\$proxy_bypass" ]]; then
-  extra_args+=( "--proxy-bypass-list=\${proxy_bypass}" )
-fi
-
-extra_args+=( "--ignore-gpu-blocklist" "--enable-gpu-rasterization" )
-
-echo "<6>exec ./steamwebhelper \${extra_args[*]} \${forwarded_args[*]}"
-echo "<remaining-lines-assume-level=7>"
-exec ./steamwebhelper "\${extra_args[@]}" "\${forwarded_args[@]}"
-EOF
-
-  chmod 0755 "$tmp_wrapper"
-  mv -f "$tmp_wrapper" "$target"
-}
-
-ensure_managed_wrapper() {
-  if grep -Fq 'deckless-managed steam webhelper wrapper' "$target" 2>/dev/null; then
-    return 0
-  fi
-
-  cp -a "$target" "$original_wrapper"
-  write_managed_wrapper
-}
-
-restart_unproxied_webhelper() {
-  local pid
-  local args
-  local stale=0
-  local -a top_level_pids=()
-
-  while IFS= read -r line; do
-    pid="${line%% *}"
-    args="${line#* }"
-
-    if [[ "$args" == *'steamwebhelper -nocrashdialog'* ]]; then
-      stale=0
-      if [[ -n "${proxy_server:-}" && "$args" != *'--proxy-server='* ]]; then
-        stale=1
-      fi
-      if [[ "$args" == *'--disable-gpu '* || "$args" == *'--disable-gpu-compositing'* ]]; then
-        stale=1
-      fi
-      (( stale == 1 )) && top_level_pids+=("$pid")
-    elif [[ "$args" == *"${steam_root}/ubuntu12_64/steamwebhelper"* && "$args" != *'--type='* ]]; then
-      stale=0
-      if [[ -n "${proxy_server:-}" && "$args" != *'--proxy-server='* ]]; then
-        stale=1
-      fi
-      if [[ "$args" == *'--disable-gpu '* || "$args" == *'--disable-gpu-compositing'* ]]; then
-        stale=1
-      fi
-      (( stale == 1 )) && top_level_pids+=("$pid")
-    fi
-  done < <(ps -ww -eo pid=,args=)
-
-  if (( ${#top_level_pids[@]} > 0 )); then
-    kill -TERM "${top_level_pids[@]}" 2>/dev/null || true
-  fi
-}
-
-steam_activity_running() {
-  local args
-  while IFS= read -r args; do
-    if [[ "$args" == *"${steam_root}/ubuntu12_32/steam"* ]] || \
-       [[ "$args" == *"${steam_root}/ubuntu12_64/steamwebhelper"* ]] || \
-       [[ "$args" == *"${target}"* ]] || \
-       [[ "$args" == *"${steam_bin}"* ]]; then
-      return 0
-    fi
-  done < <(ps -ww -eo args=)
-  return 1
-}
-
-steam_updater_active() {
-  local args
-  while IFS= read -r args; do
-    if [[ "$args" == *"${steam_root}/ubuntu12_32/steam"* && "$args" == *'-child-update-ui'* ]]; then
-      return 0
-    fi
-  done < <(ps -ww -eo args=)
-  return 1
-}
-
-start_wrapper_monitor() {
-  (
-    local seen_steam=0
-    local idle_checks=0
-    local startup_checks=0
-
-    while (( idle_checks < 60 )); do
-      if steam_activity_running; then
-        seen_steam=1
-        idle_checks=0
-        startup_checks=0
-        if steam_updater_active; then
-          if grep -Fq 'deckless-managed steam webhelper wrapper' "$target" 2>/dev/null; then
-            restore_tracked_wrapper
-          elif [[ ! -f "$original_wrapper" ]]; then
-            cp -a "$target" "$original_wrapper"
-          fi
-        else
-          ensure_managed_wrapper
-          restart_unproxied_webhelper
-        fi
-      else
-        if (( seen_steam == 1 )); then
-          (( idle_checks += 1 ))
-        else
-          (( startup_checks += 1 ))
-          if (( startup_checks >= 60 )); then
-            break
-          fi
-        fi
-      fi
-      sleep 1
-    done
-
-    restore_official_wrapper
-  ) >/dev/null 2>&1 &
-}
-
-terminate_stale_monitors
 apply_optional_locale
 
 if [[ -z "${SDL_VIDEODRIVER:-}" ]]; then
@@ -364,12 +227,6 @@ if [[ -n "$bypass_candidate" ]]; then
   proxy_bypass="$(build_chromium_bypass_list "$bypass_candidate")"
 fi
 
-if grep -Fq 'deckless-managed steam webhelper wrapper' "$target" 2>/dev/null && [[ -f "$original_wrapper" ]]; then
-  cp -a "$original_wrapper" "$target"
-fi
-
-cp -a "$target" "$original_wrapper"
-
 tmp_state="$(mktemp "${state_dir}/.session.env.XXXXXX")"
 trap 'rm -f "${tmp_state:-}"' EXIT
 {
@@ -381,11 +238,22 @@ chmod 0600 "$tmp_state"
 mv -f "$tmp_state" "$session_state"
 trap - EXIT
 
-start_wrapper_monitor
-
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
 unset ALL_PROXY all_proxy
 unset no_proxy NO_PROXY
 unset DECKLESS_WEBHELPER_PROXY_SERVER DECKLESS_WEBHELPER_PROXY_BYPASS_LIST
 
-exec "$steam_bin" "$@"
+trap 'restore_official_wrapper' EXIT HUP INT TERM
+
+start_detached_helper "$heal_helper"
+start_detached_helper "$cleanup_helper"
+
+set +e
+"$steam_bin" "$@"
+steam_status=$?
+set -e
+
+restore_official_wrapper
+trap - EXIT HUP INT TERM
+
+exit "$steam_status"
