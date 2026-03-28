@@ -1,5 +1,7 @@
 # Deckless
 
+[![ShellCheck](https://github.com/m1ngsama/deckless/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/m1ngsama/deckless/actions/workflows/shellcheck.yml)
+
 Deckless is a Linux toolkit that keeps the official Steam package intact while fixing three pain points that desktop Linux users regularly hit outside SteamOS:
 
 - split proxy policy for Steam web content vs. game traffic
