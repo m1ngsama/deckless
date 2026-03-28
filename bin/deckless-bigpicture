@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/deckless"
+settings_env="${DECKLESS_SETTINGS_ENV:-${config_dir}/deckless.env}"
+
+if [[ -r "$settings_env" ]]; then
+  # shellcheck disable=SC1090
+  . "$settings_env"
+fi
+
+launcher=(steam -tenfoot)
+
+if [[ "${DECKLESS_USE_GAMEMODE:-1}" != '0' ]] && command -v gamemoderun >/dev/null 2>&1; then
+  launcher=(gamemoderun "${launcher[@]}")
+fi
+
+if [[ "${DECKLESS_USE_GAMESCOPE:-1}" != '0' ]] && command -v gamescope >/dev/null 2>&1; then
+  refresh="${DECKLESS_GAMESCOPE_REFRESH:-240}"
+  gamescope_args=(-e -f --adaptive-sync)
+
+  if [[ -n "$refresh" ]]; then
+    gamescope_args+=(-r "$refresh")
+  fi
+
+  if [[ "${DECKLESS_USE_MANGOAPP:-1}" != '0' ]]; then
+    gamescope_args+=(--mangoapp)
+  fi
+
+  exec gamescope "${gamescope_args[@]}" -- "${launcher[@]}"
+fi
+
+exec "${launcher[@]}"

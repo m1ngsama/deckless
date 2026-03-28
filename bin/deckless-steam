@@ -1,0 +1,391 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_path="$(readlink -f "${BASH_SOURCE[0]}")"
+config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/deckless"
+settings_env="${DECKLESS_SETTINGS_ENV:-${config_dir}/deckless.env}"
+legacy_proxy_env="${HOME}/.config/network/proxy-env.sh"
+steam_bin="${DECKLESS_STEAM_BIN:-/usr/bin/steam}"
+
+if [[ -r "$settings_env" ]]; then
+  # shellcheck disable=SC1090
+  . "$settings_env"
+fi
+
+steam_root="$(readlink -e "$HOME/.steam/steam" || true)"
+if [[ -z "$steam_root" ]]; then
+  steam_root="${XDG_DATA_HOME:-$HOME/.local/share}/Steam"
+fi
+
+target="${steam_root}/ubuntu12_64/steamwebhelper_sniper_wrap.sh"
+target_dir="${target%/*}"
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/deckless/steam"
+session_state="${state_dir}/session.env"
+original_wrapper="${state_dir}/steamwebhelper_sniper_wrap.sh.original"
+proxy_env="${DECKLESS_PROXY_ENV:-${config_dir}/proxy-env.sh}"
+
+if [[ ! -d "$target_dir" ]]; then
+  printf 'Steam runtime directory not found: %s\n' "$target_dir" >&2
+  exit 1
+fi
+
+if [[ ! -x "$steam_bin" ]]; then
+  printf 'Steam binary not found: %s\n' "$steam_bin" >&2
+  exit 1
+fi
+
+mkdir -p "$state_dir"
+
+terminate_stale_monitors() {
+  local pid
+  local args
+
+  while IFS= read -r line; do
+    pid="${line%% *}"
+    args="${line#* }"
+    [[ "$pid" == "$$" ]] && continue
+
+    case "$args" in
+      "$script_path"|\
+      "$script_path "*|\
+      "bash $script_path"|\
+      "bash $script_path "*|\
+      "/usr/bin/bash $script_path"|\
+      "/usr/bin/bash $script_path "*)
+        kill -TERM "$pid" 2>/dev/null || true
+        ;;
+    esac
+  done < <(ps -ww -eo pid=,args=)
+}
+
+apply_optional_locale() {
+  if [[ -n "${DECKLESS_LANG:-}" ]]; then
+    while IFS='=' read -r name _; do
+      [[ $name == LC_* ]] && unset "$name"
+    done < <(env)
+    export LANG="$DECKLESS_LANG"
+    export LC_CTYPE="$DECKLESS_LANG"
+  fi
+
+  if [[ -n "${DECKLESS_FC_LANG:-}" ]]; then
+    export FC_LANG="$DECKLESS_FC_LANG"
+  fi
+
+  case "${DECKLESS_INPUT_METHOD:-}" in
+    fcitx|fcitx5)
+      export GTK_IM_MODULE='fcitx'
+      export QT_IM_MODULE='fcitx'
+      export XMODIFIERS='@im=fcitx'
+      export SDL_IM_MODULE='fcitx'
+      export INPUT_METHOD='fcitx'
+      ;;
+    ibus)
+      export GTK_IM_MODULE='ibus'
+      export QT_IM_MODULE='ibus'
+      export XMODIFIERS='@im=ibus'
+      export SDL_IM_MODULE='ibus'
+      export INPUT_METHOD='ibus'
+      ;;
+  esac
+}
+
+normalize_proxy_server() {
+  case "$1" in
+    socks5h://*)
+      printf 'socks5://%s\n' "${1#socks5h://}"
+      ;;
+    socks5://*|http://*|https://*)
+      printf '%s\n' "$1"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+build_chromium_bypass_list() {
+  local raw="$1"
+  local entry
+  local -a entries=()
+
+  if [[ "$raw" == *';'* ]]; then
+    printf '%s\n' "$raw"
+    return 0
+  fi
+
+  IFS=',' read -r -a input_entries <<< "$raw"
+  for entry in "${input_entries[@]}"; do
+    entry="${entry//[[:space:]]/}"
+    [[ -z "$entry" ]] && continue
+    [[ "$entry" == .* ]] && entry="*${entry}"
+    entries+=("$entry")
+  done
+
+  ((${#entries[@]} == 0)) && return 0
+
+  local IFS=';'
+  printf '%s\n' "${entries[*]}"
+}
+
+restore_tracked_wrapper() {
+  if [[ -f "$original_wrapper" ]]; then
+    cp -a "$original_wrapper" "$target"
+  fi
+}
+
+restore_official_wrapper() {
+  restore_tracked_wrapper
+  rm -f "$session_state" "$original_wrapper"
+}
+
+write_managed_wrapper() {
+  local tmp_wrapper
+  local session_state_q
+
+  tmp_wrapper="$(mktemp "${target_dir}/.steamwebhelper_sniper_wrap.sh.XXXXXX")"
+  printf -v session_state_q '%q' "$session_state"
+
+  cat >"$tmp_wrapper" <<EOF
+#!/bin/bash
+
+# deckless-managed steam webhelper wrapper
+
+session_state=${session_state_q}
+
+export LD_LIBRARY_PATH=.\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}
+
+if [[ -z "\${XDG_RUNTIME_DIR:-}" ]]; then
+  export XDG_RUNTIME_DIR="/run/user/\$(id -u)"
+fi
+
+if [[ -z "\${PULSE_SERVER:-}" && -S "\${XDG_RUNTIME_DIR}/pulse/native" ]]; then
+  export PULSE_SERVER="unix:\${XDG_RUNTIME_DIR}/pulse/native"
+fi
+
+if [[ -z "\${GBM_BACKENDS_PATH:-}" ]]; then
+  if [[ -r /run/host/usr/lib/gbm/dri_gbm.so ]]; then
+    export GBM_BACKENDS_PATH='/run/host/usr/lib/gbm'
+  elif [[ -r /usr/lib/gbm/dri_gbm.so ]]; then
+    export GBM_BACKENDS_PATH='/usr/lib/gbm'
+  fi
+fi
+
+if [[ -z "\${__EGL_VENDOR_LIBRARY_DIRS:-}" ]]; then
+  if [[ -d /run/host/usr/share/glvnd/egl_vendor.d ]]; then
+    export __EGL_VENDOR_LIBRARY_DIRS='/run/host/usr/share/glvnd/egl_vendor.d'
+  elif [[ -d /usr/share/glvnd/egl_vendor.d ]]; then
+    export __EGL_VENDOR_LIBRARY_DIRS='/usr/share/glvnd/egl_vendor.d'
+  fi
+fi
+
+proxy_server="\${DECKLESS_WEBHELPER_PROXY_SERVER:-}"
+proxy_bypass="\${DECKLESS_WEBHELPER_PROXY_BYPASS_LIST:-}"
+if [[ -z "\$proxy_server" && -r "\$session_state" ]]; then
+  # shellcheck disable=SC1090
+  . "\$session_state"
+  proxy_server="\${DECKLESS_WEBHELPER_PROXY_SERVER:-}"
+  proxy_bypass="\${DECKLESS_WEBHELPER_PROXY_BYPASS_LIST:-}"
+fi
+
+extra_args=()
+forwarded_args=()
+
+for arg in "\$@"; do
+  case "\$arg" in
+    --disable-gpu|--disable-gpu-compositing)
+      continue
+      ;;
+    *)
+      forwarded_args+=( "\$arg" )
+      ;;
+  esac
+done
+
+if [[ -n "\$proxy_server" ]]; then
+  extra_args+=( "--proxy-server=\${proxy_server}" )
+fi
+
+if [[ -n "\$proxy_bypass" ]]; then
+  extra_args+=( "--proxy-bypass-list=\${proxy_bypass}" )
+fi
+
+extra_args+=( "--ignore-gpu-blocklist" "--enable-gpu-rasterization" )
+
+echo "<6>exec ./steamwebhelper \${extra_args[*]} \${forwarded_args[*]}"
+echo "<remaining-lines-assume-level=7>"
+exec ./steamwebhelper "\${extra_args[@]}" "\${forwarded_args[@]}"
+EOF
+
+  chmod 0755 "$tmp_wrapper"
+  mv -f "$tmp_wrapper" "$target"
+}
+
+ensure_managed_wrapper() {
+  if grep -Fq 'deckless-managed steam webhelper wrapper' "$target" 2>/dev/null; then
+    return 0
+  fi
+
+  cp -a "$target" "$original_wrapper"
+  write_managed_wrapper
+}
+
+restart_unproxied_webhelper() {
+  local pid
+  local args
+  local stale=0
+  local -a top_level_pids=()
+
+  while IFS= read -r line; do
+    pid="${line%% *}"
+    args="${line#* }"
+
+    if [[ "$args" == *'steamwebhelper -nocrashdialog'* ]]; then
+      stale=0
+      if [[ -n "${proxy_server:-}" && "$args" != *'--proxy-server='* ]]; then
+        stale=1
+      fi
+      if [[ "$args" == *'--disable-gpu '* || "$args" == *'--disable-gpu-compositing'* ]]; then
+        stale=1
+      fi
+      (( stale == 1 )) && top_level_pids+=("$pid")
+    elif [[ "$args" == *"${steam_root}/ubuntu12_64/steamwebhelper"* && "$args" != *'--type='* ]]; then
+      stale=0
+      if [[ -n "${proxy_server:-}" && "$args" != *'--proxy-server='* ]]; then
+        stale=1
+      fi
+      if [[ "$args" == *'--disable-gpu '* || "$args" == *'--disable-gpu-compositing'* ]]; then
+        stale=1
+      fi
+      (( stale == 1 )) && top_level_pids+=("$pid")
+    fi
+  done < <(ps -ww -eo pid=,args=)
+
+  if (( ${#top_level_pids[@]} > 0 )); then
+    kill -TERM "${top_level_pids[@]}" 2>/dev/null || true
+  fi
+}
+
+steam_activity_running() {
+  local args
+  while IFS= read -r args; do
+    if [[ "$args" == *"${steam_root}/ubuntu12_32/steam"* ]] || \
+       [[ "$args" == *"${steam_root}/ubuntu12_64/steamwebhelper"* ]] || \
+       [[ "$args" == *"${target}"* ]] || \
+       [[ "$args" == *"${steam_bin}"* ]]; then
+      return 0
+    fi
+  done < <(ps -ww -eo args=)
+  return 1
+}
+
+steam_updater_active() {
+  local args
+  while IFS= read -r args; do
+    if [[ "$args" == *"${steam_root}/ubuntu12_32/steam"* && "$args" == *'-child-update-ui'* ]]; then
+      return 0
+    fi
+  done < <(ps -ww -eo args=)
+  return 1
+}
+
+start_wrapper_monitor() {
+  (
+    local seen_steam=0
+    local idle_checks=0
+    local startup_checks=0
+
+    while (( idle_checks < 60 )); do
+      if steam_activity_running; then
+        seen_steam=1
+        idle_checks=0
+        startup_checks=0
+        if steam_updater_active; then
+          if grep -Fq 'deckless-managed steam webhelper wrapper' "$target" 2>/dev/null; then
+            restore_tracked_wrapper
+          elif [[ ! -f "$original_wrapper" ]]; then
+            cp -a "$target" "$original_wrapper"
+          fi
+        else
+          ensure_managed_wrapper
+          restart_unproxied_webhelper
+        fi
+      else
+        if (( seen_steam == 1 )); then
+          (( idle_checks += 1 ))
+        else
+          (( startup_checks += 1 ))
+          if (( startup_checks >= 60 )); then
+            break
+          fi
+        fi
+      fi
+      sleep 1
+    done
+
+    restore_official_wrapper
+  ) >/dev/null 2>&1 &
+}
+
+terminate_stale_monitors
+apply_optional_locale
+
+if [[ -z "${SDL_VIDEODRIVER:-}" ]]; then
+  if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+    export SDL_VIDEODRIVER='wayland'
+  elif [[ -n "${DISPLAY:-}" ]]; then
+    export SDL_VIDEODRIVER='x11'
+  fi
+fi
+
+if [[ -z "${XDG_RUNTIME_DIR:-}" ]]; then
+  xdg_runtime_dir="/run/user/$(id -u)"
+  export XDG_RUNTIME_DIR="$xdg_runtime_dir"
+fi
+
+if [[ -r "$proxy_env" ]]; then
+  # shellcheck disable=SC1090
+  . "$proxy_env"
+elif [[ -r "$legacy_proxy_env" ]]; then
+  # shellcheck disable=SC1090
+  . "$legacy_proxy_env"
+fi
+
+proxy_candidate="${DECKLESS_PROXY_SERVER:-${DECKLESS_WEBHELPER_PROXY_SERVER:-${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-${ALL_PROXY:-${all_proxy:-}}}}}}}}"
+bypass_candidate="${DECKLESS_PROXY_BYPASS_LIST:-${DECKLESS_WEBHELPER_PROXY_BYPASS_LIST:-${NO_PROXY:-${no_proxy:-steamloopback.host,localhost,127.0.0.1,::1,.local,.lan,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12}}}}"
+
+proxy_server=''
+proxy_bypass=''
+
+if [[ -n "$proxy_candidate" ]]; then
+  proxy_server="$(normalize_proxy_server "$proxy_candidate" || true)"
+fi
+
+if [[ -n "$bypass_candidate" ]]; then
+  proxy_bypass="$(build_chromium_bypass_list "$bypass_candidate")"
+fi
+
+if grep -Fq 'deckless-managed steam webhelper wrapper' "$target" 2>/dev/null && [[ -f "$original_wrapper" ]]; then
+  cp -a "$original_wrapper" "$target"
+fi
+
+cp -a "$target" "$original_wrapper"
+
+tmp_state="$(mktemp "${state_dir}/.session.env.XXXXXX")"
+trap 'rm -f "${tmp_state:-}"' EXIT
+{
+  printf '# deckless session state\n'
+  printf 'DECKLESS_WEBHELPER_PROXY_SERVER=%q\n' "$proxy_server"
+  printf 'DECKLESS_WEBHELPER_PROXY_BYPASS_LIST=%q\n' "$proxy_bypass"
+} >"$tmp_state"
+chmod 0600 "$tmp_state"
+mv -f "$tmp_state" "$session_state"
+trap - EXIT
+
+start_wrapper_monitor
+
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
+unset ALL_PROXY all_proxy
+unset no_proxy NO_PROXY
+unset DECKLESS_WEBHELPER_PROXY_SERVER DECKLESS_WEBHELPER_PROXY_BYPASS_LIST
+
+exec "$steam_bin" "$@"

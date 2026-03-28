@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+I3_MSG='/usr/bin/i3-msg'
+
+quote_i3_string() {
+  local value="$1"
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  printf '%s' "$value"
+}
+
+focused_workspace() {
+  "$I3_MSG" -t get_workspaces | jq -r '.[] | select(.focused) | .name'
+}
+
+bpm_info() {
+  "$I3_MSG" -t get_tree | jq -r '
+    def walk($ws):
+      (if .type == "workspace" then .name else $ws end) as $current_ws
+      | if (.window != null)
+          and ((.window_properties.class // "") == "steam")
+          and ((.window_properties.instance // "") == "steamwebhelper")
+          and ((.name // "") | test("Big Picture|大屏幕模式"))
+        then "\(.id)\t\($current_ws)"
+        else empty
+        end,
+        (.nodes[]? | walk($current_ws)),
+        (.floating_nodes[]? | walk($current_ws));
+    walk(null)
+  ' | head -n1
+}
+
+candidate_window() {
+  jq -e '
+    (.container.window != null)
+    and (((.container.window_properties.class // "") | ascii_downcase) != "steam")
+    and (((.container.name // "") | test("Big Picture|大屏幕模式")) | not)
+    and (
+      (.container.window_type // "normal") as $window_type
+      | ($window_type == "normal" or $window_type == "dialog" or $window_type == "utility")
+    )
+  ' >/dev/null
+}
+
+focus_game() {
+  local container_id="$1"
+  local workspace_name="$2"
+  local bpm_id="$3"
+  local escaped_workspace
+
+  escaped_workspace="$(quote_i3_string "$workspace_name")"
+
+  "$I3_MSG" \
+    "[con_id=${bpm_id}] fullscreen disable; [con_id=${container_id}] move container to workspace \"${escaped_workspace}\"; workspace \"${escaped_workspace}\"; [con_id=${container_id}] focus; [con_id=${container_id}] fullscreen enable" \
+    >/dev/null
+}
+
+restore_bpm() {
+  local bpm_id="$1"
+  local workspace_name="$2"
+  local escaped_workspace
+
+  escaped_workspace="$(quote_i3_string "$workspace_name")"
+
+  "$I3_MSG" \
+    "workspace \"${escaped_workspace}\"; [con_id=${bpm_id}] focus; [con_id=${bpm_id}] fullscreen enable" \
+    >/dev/null
+}
+
+active_game_id=''
+
+"$I3_MSG" -m -t subscribe '[ "window" ]' | while IFS= read -r event; do
+  [[ -n "$event" ]] || continue
+
+  change="$(jq -r '.change // empty' <<<"$event")"
+  [[ -n "$change" ]] || continue
+
+  bpm="$(bpm_info)"
+  bpm_id="${bpm%%$'\t'*}"
+  bpm_workspace="${bpm#*$'\t'}"
+
+  case "$change" in
+    new)
+      [[ -n "$bpm" ]] || continue
+      [[ "$(focused_workspace)" == "$bpm_workspace" ]] || continue
+      candidate_window <<<"$event" || continue
+
+      container_id="$(jq -r '.container.id' <<<"$event")"
+      focus_game "$container_id" "$bpm_workspace" "$bpm_id" || true
+      active_game_id="$container_id"
+      ;;
+    close)
+      container_id="$(jq -r '.container.id // empty' <<<"$event")"
+      [[ -n "$active_game_id" ]] || continue
+      [[ "$container_id" == "$active_game_id" ]] || continue
+
+      active_game_id=''
+      [[ -n "$bpm" ]] || continue
+
+      sleep 0.15
+      restore_bpm "$bpm_id" "$bpm_workspace" || true
+      ;;
+  esac
+done
